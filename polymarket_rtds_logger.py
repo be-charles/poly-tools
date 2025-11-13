@@ -384,9 +384,12 @@ class PolymarketRTDSLogger:
         while True:
             try:
                 await asyncio.sleep(PING_INTERVAL)
-                if self.ws and not self.ws.closed:
+                if self.ws:
                     await self.ws.send(json.dumps({"type": "ping"}))
                     logger.debug("Sent ping")
+            except (websockets.exceptions.ConnectionClosed, ConnectionError) as e:
+                logger.debug(f"Ping stopped - connection closed: {e}")
+                break
             except Exception as e:
                 logger.error(f"Error sending ping: {e}")
                 break
