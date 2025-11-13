@@ -18,7 +18,47 @@ A Python script that connects to Polymarket's Real-Time Data Socket (RTDS) and l
 ```bash
 # Install dependencies
 pip install -r requirements.txt
+
+# Create configuration file
+cp .env.example .env
 ```
+
+## Configuration
+
+The script uses a `.env` file for configuration. Copy `.env.example` to `.env` and customize:
+
+```bash
+cp .env.example .env
+```
+
+### Available Settings
+
+**Price-to-Beat Settings** (most important):
+```env
+BTC_PRICE_TO_BEAT=95000.00
+ETH_PRICE_TO_BEAT=3500.00
+XRP_PRICE_TO_BEAT=0.65
+SOL_PRICE_TO_BEAT=195.00
+```
+
+**General Settings**:
+```env
+CSV_FILENAME=polymarket_crypto_15m_log.csv
+LOG_LEVEL=INFO
+```
+
+**WebSocket Settings**:
+```env
+WS_ENDPOINT=wss://ws-live-data.polymarket.com
+PING_INTERVAL=5
+```
+
+**Market Settings**:
+```env
+SUPPORTED_SYMBOLS=btc,eth,xrp,sol
+```
+
+See `.env.example` for all available configuration options and detailed descriptions.
 
 ## Usage
 
@@ -30,9 +70,25 @@ Run the script to start logging all 15-minute crypto markets:
 python polymarket_rtds_logger.py
 ```
 
+The script will load configuration from `.env` automatically.
+
 ### Setting Manual Price-to-Beat
 
-Since the script may not be able to calculate the first price-to-beat (if it starts after the window has begun), you can manually set it:
+**Method 1: Using .env file (recommended)**
+
+Edit your `.env` file:
+```env
+BTC_PRICE_TO_BEAT=95000.00
+ETH_PRICE_TO_BEAT=3500.00
+SOL_PRICE_TO_BEAT=195.00
+```
+
+Then run:
+```bash
+python polymarket_rtds_logger.py
+```
+
+**Method 2: Command-line arguments (overrides .env)**
 
 ```bash
 # Set price-to-beat for specific coins
@@ -44,8 +100,12 @@ python polymarket_rtds_logger.py --price-to-beat "BTC:95000"
 
 ### Debug Mode
 
-Enable verbose logging to see all WebSocket messages:
+**Method 1: Using .env file**
+```env
+LOG_LEVEL=DEBUG
+```
 
+**Method 2: Command-line argument (overrides .env)**
 ```bash
 python polymarket_rtds_logger.py --debug
 ```
@@ -143,8 +203,22 @@ When a new market is detected, the script:
 
 If you start the script after a window has begun:
 1. The first price seen may not be the actual window start price
-2. Use `--price-to-beat` to manually set the correct baseline
-3. The script will use your manual price for that symbol
+2. Set the correct baseline in your `.env` file (recommended):
+   ```env
+   BTC_PRICE_TO_BEAT=95000.00
+   ```
+3. Or use `--price-to-beat` command-line argument (overrides .env):
+   ```bash
+   python polymarket_rtds_logger.py --price-to-beat "BTC:95000"
+   ```
+4. The script will use your manual price for that symbol
+
+### Configuration Priority
+
+Settings are loaded in the following order (later overrides earlier):
+1. Default values in the script
+2. `.env` file settings
+3. Command-line arguments (highest priority)
 
 ## Troubleshooting
 
@@ -168,7 +242,11 @@ If a new market isn't detected:
 If the price-to-beat seems incorrect:
 1. Stop the script
 2. Check the actual window start price
-3. Restart with `--price-to-beat SYMBOL:PRICE`
+3. Update your `.env` file:
+   ```env
+   BTC_PRICE_TO_BEAT=95000.00
+   ```
+4. Or restart with `--price-to-beat SYMBOL:PRICE` for a one-time override
 
 ## Example Output
 

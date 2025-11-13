@@ -20,21 +20,27 @@ import csv
 import time
 import argparse
 import logging
+import os
 from datetime import datetime
 from typing import Dict, Set, Optional
 import aiohttp
 from collections import defaultdict
+from dotenv import load_dotenv
 
-# Configuration
-WS_ENDPOINT = "wss://ws-live-data.polymarket.com"
-GAMMA_API_BASE = "https://gamma-api.polymarket.com"
-SUPPORTED_SYMBOLS = ["btc", "eth", "xrp", "sol"]
-CSV_FILENAME = "polymarket_crypto_15m_log.csv"
-PING_INTERVAL = 5  # seconds
+# Load environment variables from .env file
+load_dotenv()
+
+# Configuration (can be overridden by .env file)
+WS_ENDPOINT = os.getenv("WS_ENDPOINT", "wss://ws-live-data.polymarket.com")
+GAMMA_API_BASE = os.getenv("GAMMA_API_BASE", "https://gamma-api.polymarket.com")
+SUPPORTED_SYMBOLS = os.getenv("SUPPORTED_SYMBOLS", "btc,eth,xrp,sol").split(",")
+CSV_FILENAME = os.getenv("CSV_FILENAME", "polymarket_crypto_15m_log.csv")
+PING_INTERVAL = int(os.getenv("PING_INTERVAL", "5"))  # seconds
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -478,31 +484,45 @@ def main():
     parser.add_argument(
         "--price-to-beat",
         type=str,
-        help="Manually set price-to-beat in format: SYMBOL:PRICE,SYMBOL:PRICE (e.g., BTC:95000,ETH:3500)"
+        help="Manually set price-to-beat in format: SYMBOL:PRICE,SYMBOL:PRICE (e.g., BTC:95000,ETH:3500) - Overrides .env settings"
     )
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug logging"
+        help="Enable debug logging - Overrides LOG_LEVEL in .env"
     )
 
     args = parser.parse_args()
 
-    # Set log level
+    # Set log level (command-line argument overrides .env)
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
-    # Parse manual prices to beat
+    # Load manual prices from .env file first
     manual_prices = {}
+    for symbol in SUPPORTED_SYMBOLS:
+        env_key = f"{symbol.upper()}_PRICE_TO_BEAT"
+        price_str = os.getenv(env_key)
+        if price_str:
+            try:
+                manual_prices[symbol.lower()] = float(price_str)
+                logger.info(f"Loaded {symbol.upper()} price to beat from .env: {price_str}")
+            except ValueError:
+                logger.warning(f"Invalid price in .env for {env_key}: {price_str}")
+
+    # Command-line argument overrides .env prices
     if args.price_to_beat:
         try:
             for pair in args.price_to_beat.split(','):
                 symbol, price = pair.split(':')
                 manual_prices[symbol.lower().strip()] = float(price)
-            logger.info(f"Manual prices to beat: {manual_prices}")
+                logger.info(f"Command-line override for {symbol.upper()}: {price}")
         except ValueError:
             logger.error("Invalid price-to-beat format. Use: SYMBOL:PRICE,SYMBOL:PRICE")
             return
+
+    if manual_prices:
+        logger.info(f"Active prices to beat: {manual_prices}")
 
     # Create and run logger
     logger_instance = PolymarketRTDSLogger(manual_prices_to_beat=manual_prices)
