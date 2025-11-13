@@ -177,11 +177,11 @@ class PolymarketRTDSLogger:
                 self.session = aiohttp.ClientSession()
 
             url = f"{GAMMA_API_BASE}/markets"
+            logger.info("🔍 Discovering existing 15-minute markets...")
 
             # Search for each crypto symbol
+            found_count = 0
             for symbol in SUPPORTED_SYMBOLS:
-                logger.info(f"Searching for existing {symbol.upper()} 15m markets...")
-
                 async with self.session.get(url, params={"closed": "false"}) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -190,6 +190,12 @@ class PolymarketRTDSLogger:
                             slug = market.get("market_slug", "")
                             if self._is_15m_crypto_market(slug) == symbol:
                                 await self._add_market(slug, market)
+                                found_count += 1
+
+            if found_count > 0:
+                logger.info(f"✅ Found {found_count} existing 15m market(s)")
+            else:
+                logger.info("⚠️  No existing 15m markets found - waiting for new markets...")
 
         except Exception as e:
             logger.error(f"Error discovering markets: {e}")
@@ -260,8 +266,8 @@ class PolymarketRTDSLogger:
             msg_type = message.get("type")
             payload = message.get("payload", {})
 
+            # Handle Binance crypto prices
             if topic == "crypto_prices" and msg_type == "update":
-                # Update crypto price
                 symbol_raw = payload.get("symbol", "")
                 # Convert "btcusdt" to "btc"
                 symbol = symbol_raw.replace("usdt", "").lower()
@@ -269,7 +275,7 @@ class PolymarketRTDSLogger:
                 if symbol in SUPPORTED_SYMBOLS:
                     price = float(payload.get("value", 0))
                     self.crypto_prices[symbol] = price
-                    logger.debug(f"{symbol.upper()} price: ${price:.2f}")
+                    print(f"💰 {symbol.upper()}: ${price:.2f} (Binance)")
 
                     # Update prices to beat for active markets
                     for slug in self.tracked_slugs:
@@ -278,9 +284,29 @@ class PolymarketRTDSLogger:
                             if window_start:
                                 self._update_price_to_beat(symbol, window_start, price)
 
+            # Handle Chainlink crypto prices
+            elif topic == "crypto_prices_chainlink" and msg_type == "update":
+                symbol_raw = payload.get("symbol", "")
+                # Convert "btc/usd" to "btc"
+                symbol = symbol_raw.split("/")[0].lower() if "/" in symbol_raw else symbol_raw.lower()
+
+                if symbol in SUPPORTED_SYMBOLS:
+                    price = float(payload.get("value", 0))
+                    self.crypto_prices[symbol] = price
+                    print(f"💰 {symbol.upper()}: ${price:.2f} (Chainlink)")
+
+                    # Update prices to beat for active markets
+                    for slug in self.tracked_slugs:
+                        if slug.startswith(f"{symbol}-updown-15m-"):
+                            window_start = self._extract_window_timestamp(slug)
+                            if window_start:
+                                self._update_price_to_beat(symbol, window_start, price)
+
+            # Handle trade activity
             elif topic == "activity" and msg_type == "trades":
-                # Handle trade updates
                 slug = payload.get("slug", "")
+
+                logger.debug(f"Trade activity: {slug}")
 
                 # Check if this is a new market
                 if slug and slug not in self.tracked_slugs:
@@ -293,9 +319,11 @@ class PolymarketRTDSLogger:
                 if slug in self.markets:
                     await self._log_market_data(slug, payload)
 
+            # Handle CLOB market price changes
             elif topic == "clob_market" and msg_type == "price_change":
-                # Handle price updates from CLOB
                 token_id = payload.get("asset_id", "")
+
+                logger.debug(f"CLOB price change: {token_id}")
 
                 # Find matching market
                 for slug, market in self.markets.items():
@@ -317,20 +345,24 @@ class PolymarketRTDSLogger:
         """
         try:
             if slug not in self.markets:
+                logger.debug(f"Market {slug} not in tracked markets")
                 return
 
             market = self.markets[slug]
             symbol = self._is_15m_crypto_market(slug)
             if not symbol:
+                logger.debug(f"Slug {slug} is not a 15m crypto market")
                 return
 
             window_start = self._extract_window_timestamp(slug)
             if not window_start:
+                logger.debug(f"Could not extract window timestamp from {slug}")
                 return
 
             # Get crypto price
             crypto_price = self.crypto_prices.get(symbol, 0)
             if crypto_price == 0:
+                logger.debug(f"No crypto price yet for {symbol}")
                 return  # Wait until we have crypto price
 
             # Get price to beat
@@ -352,8 +384,21 @@ class PolymarketRTDSLogger:
                     no_price = price
                     yes_price = 1 - price
 
+            # Try trade format
+            elif "outcomePrice" in payload:
+                outcome = payload.get("outcome", "")
+                outcome_price = float(payload.get("outcomePrice", 0))
+
+                if outcome.lower() == "yes":
+                    yes_price = outcome_price
+                    no_price = 1 - outcome_price
+                elif outcome.lower() == "no":
+                    no_price = outcome_price
+                    yes_price = 1 - outcome_price
+
             # If we couldn't extract prices from this message, skip
             if yes_price is None or no_price is None:
+                logger.debug(f"Could not extract prices from payload: {list(payload.keys())}")
                 return
 
             # Determine outcome if market has ended
@@ -373,11 +418,14 @@ class PolymarketRTDSLogger:
                 outcome=outcome
             )
 
-            logger.info(f"📊 {symbol.upper()} | Yes: {yes_price:.3f} No: {no_price:.3f} | "
-                       f"Price: ${crypto_price:.2f} | Beat: ${price_to_beat:.2f if price_to_beat else 'N/A'}")
+            # Print to terminal
+            ptb_str = f"${price_to_beat:.2f}" if price_to_beat else "N/A"
+            print(f"📊 {symbol.upper()} | Yes: {yes_price:.3f} No: {no_price:.3f} | "
+                  f"Price: ${crypto_price:.2f} | Beat: {ptb_str}")
 
         except Exception as e:
-            logger.error(f"Error logging market data: {e}")
+            logger.error(f"Error logging market data for {slug}: {e}")
+            logger.debug(f"Payload: {payload}")
 
     async def _send_ping(self):
         """Send periodic ping messages to keep connection alive."""
@@ -394,6 +442,29 @@ class PolymarketRTDSLogger:
                 logger.error(f"Error sending ping: {e}")
                 break
 
+    async def _status_reporter(self):
+        """Periodically report status."""
+        while True:
+            try:
+                await asyncio.sleep(60)  # Every 60 seconds
+
+                # Show current prices
+                if self.crypto_prices:
+                    price_str = " | ".join([f"{s.upper()}: ${p:.2f}"
+                                           for s, p in self.crypto_prices.items()])
+                    print(f"\n📈 Current Prices: {price_str}")
+
+                # Show tracked markets
+                if self.tracked_slugs:
+                    print(f"📊 Tracking {len(self.tracked_slugs)} market(s)")
+                else:
+                    print(f"⏳ Waiting for 15-minute markets to appear...")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in status reporter: {e}")
+
     async def _subscribe(self):
         """Subscribe to relevant RTDS topics."""
         subscriptions = []
@@ -404,7 +475,7 @@ class PolymarketRTDSLogger:
             "type": "trades"
         })
 
-        # Subscribe to crypto prices for all supported symbols
+        # Subscribe to Binance crypto prices for all supported symbols
         # Format: btcusdt, ethusdt, xrpusdt, solusdt
         crypto_symbols = [f"{s}usdt" for s in SUPPORTED_SYMBOLS]
         subscriptions.append({
@@ -412,6 +483,16 @@ class PolymarketRTDSLogger:
             "type": "update",
             "filters": json.dumps({"symbol": ",".join(crypto_symbols)})
         })
+
+        # Subscribe to Chainlink crypto prices (more reliable)
+        # Format: btc/usd, eth/usd, xrp/usd, sol/usd
+        chainlink_symbols = [f"{s}/usd" for s in SUPPORTED_SYMBOLS]
+        for symbol in chainlink_symbols:
+            subscriptions.append({
+                "topic": "crypto_prices_chainlink",
+                "type": "update",
+                "filters": json.dumps({"symbol": symbol})
+            })
 
         # Subscribe to CLOB market price changes for tracked markets
         # This provides more frequent price updates
@@ -426,7 +507,11 @@ class PolymarketRTDSLogger:
         }
 
         await self.ws.send(json.dumps(message))
-        logger.info(f"Subscribed to {len(subscriptions)} topics")
+        logger.info(f"✅ Subscribed to {len(subscriptions)} topics")
+        logger.info(f"   - Activity/trades")
+        logger.info(f"   - Binance prices: {', '.join(SUPPORTED_SYMBOLS)}")
+        logger.info(f"   - Chainlink prices: {', '.join(SUPPORTED_SYMBOLS)}")
+        logger.info(f"   - CLOB market updates")
 
     async def connect(self):
         """Connect to Polymarket RTDS and start logging."""
@@ -445,8 +530,12 @@ class PolymarketRTDSLogger:
                 # Subscribe to topics
                 await self._subscribe()
 
-                # Start ping task
+                # Start background tasks
                 ping_task = asyncio.create_task(self._send_ping())
+                status_task = asyncio.create_task(self._status_reporter())
+
+                logger.info("👂 Listening for market updates...")
+                print()  # Empty line before updates start
 
                 # Listen for messages
                 try:
@@ -460,6 +549,7 @@ class PolymarketRTDSLogger:
                     logger.warning("WebSocket connection closed")
                 finally:
                     ping_task.cancel()
+                    status_task.cancel()
 
         except Exception as e:
             logger.error(f"Connection error: {e}")
